@@ -1,0 +1,9 @@
+
+阶段	                        内容	                                产出
+P0	git init、目录骨架、CLAUDE.md、.env(密码 gitignore)	                仓库可用
+P1	个人数据库:Markdown 资料 + 检索脚本(rg 全文+索引),回答定位原文	       能力①
+P2	smail 邮箱:IMAP 收信 → 拟草稿 → 你确认 → SMTP 发送;UID 去重保证幂等	  能力②
+P3	手机链路:FastAPI 确认页 + Tailscale + Server酱 推送	                 能力④
+P4	ehall:Playwright 登录态持久化 + 查询 + 填表;危险操作白名单、双重确认   能力③
+P5	串起主线流程 + 把纠正写进 CLAUDE.md/技能、git 管理	                  能力⑤ + 成长
+P6	打磨:定时调度、开机自启、体验验证(实际请一次假)	                       收尾
