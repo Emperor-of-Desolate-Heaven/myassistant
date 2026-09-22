@@ -19,9 +19,11 @@ from mail import load_env  # 复用 .env 读取
 
 
 def bark_push(key, title, body, url=None):
-    api = f"https://api.day.app/{key}/" + urllib.parse.quote(title)
+    # safe='':斜杠也编码。正文含 http:// 链接时若保留裸斜杠,Bark 服务器会 404
+    # (2026-09-22 实测定位)
+    api = f"https://api.day.app/{key}/" + urllib.parse.quote(title, safe="")
     if body:
-        api += "/" + urllib.parse.quote(body)
+        api += "/" + urllib.parse.quote(body, safe="")
     params = {}
     if url:
         params["url"] = url
