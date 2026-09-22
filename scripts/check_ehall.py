@@ -31,6 +31,9 @@ def main():
     except subprocess.TimeoutExpired:
         bark_push(key, "ehall 检查超时", "假期登记窗口检查卡住,需要人工看看。")
         sys.exit(1)
+    except Exception as e:
+        bark_push(key, "ehall 检查异常", f"检查脚本异常: {e}"[:100])
+        sys.exit(1)
     out = (r.stdout or "") + (r.stderr or "")
     if "open:" in out:
         bark_push(key, "假期登记窗口开放", "ehall 节假日离返校已开放登记,回复助手即可帮你填表提交。")

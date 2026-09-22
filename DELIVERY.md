@@ -78,6 +78,10 @@ Windows 计划任务 ×4 + 启动文件夹 ×2   ←→  无对话窗口时的�
 - CAS 风控:无头浏览器必弹滑块;TGC 与浏览器指纹绑定,无头/有头混用会直接吊销登录票 → 常驻浏览器固定有头
 - Windows 控制台 GBK 乱码(curl 传中文)→ 专用 UTF-8 工具;后台启动的 Chromium 需 --disable-gpu 否则窗口透明
 - Playwright `context.storage_state(path=…)` 是"保存"不是"加载"
+- 计划任务/启动项的 .bat 必须纯 ASCII:UTF-8 无 BOM 的 bat 里 `cd` 中文路径在 GBK
+  解析下失败(退出码 1/255,日志写不出,全部静默);中文提示词移入 Python 包装脚本,
+  项目用目录联接(junction)提供 ASCII 路径
+- Bark 推送正文含 http 链接时斜杠必须百分号编码,否则服务器 404
 
 ## 六、已知限制(如实)
 

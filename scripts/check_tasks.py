@@ -32,15 +32,13 @@ CLAUDE = shutil.which("claude") or str(
 
 AGENT_PROMPT = (
     "你是用户的个人助手(项目在 D:\\生成式软件工程\\myassistant,先读 CLAUDE.md)。"
-    "用户刚在手机上布置了任务,现在要完成后续处理:"
-    "1) 读 data/state/server/tasks.json,找出 status=confirmed 的任务"
-    "(已处理的记录在 data/state/agent-handled.json,不要重复处理);"
-    "2) source=email 的任务:用 py scripts/mail.py read <账号> <UID> 读邮件全文,"
-    "按邮件内容执行用户要求;完成后 py scripts/mail.py done <账号> <UID> 标记已处理;"
-    "3) 其他任务(留言板 source=phone-form 或桌面确认的任务):按任务 detail 执行;"
-    "任务要求的对外动作(发邮件等)视为已获用户确认,直接执行;任务没要求的事不做;"
-    "4) 完成后用 py scripts/push.py 给用户手机推送处理结果;"
-    "5) 全程自动完成,不要提问,不要修改任务文件本身。")
+    "现在只处理下面这一条任务(其他任务由别的进程处理,不要管):\n"
+    "--- 任务开始 ---\n任务ID: {tid}\n标题: {title}\n详情:\n{detail}\n--- 任务结束 ---\n"
+    "处理要求:1) source=email 的任务,先用 py scripts/mail.py read <账号> <UID> "
+    "读邮件全文,按邮件内容执行,完成后用 py scripts/mail.py done <账号> <UID> 标记已处理;"
+    "2) 其他任务直接按详情执行;任务要求的对外动作视为已获用户确认,任务没要求的事不做;"
+    "3) 完成后用 py scripts/push.py 给用户手机推送处理结果;"
+    "4) 自动完成,不要提问,不要修改 tasks.json / agent-handled.json。")
 
 
 def load_json(f, default):
@@ -73,9 +71,11 @@ def main():
         tid = t["id"]
         rec = handled.get(tid, {"attempts": 0})
         print(f"处理任务 {tid}: {t.get('title', '')[:40]}")
+        prompt = AGENT_PROMPT.format(
+            tid=tid, title=t.get("title", ""), detail=t.get("detail", "") or "(无)")
         try:
             r = subprocess.run(
-                [CLAUDE, "-p", AGENT_PROMPT, "--permission-mode", "bypassPermissions"],
+                [CLAUDE, "-p", prompt, "--permission-mode", "bypassPermissions"],
                 capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=900, cwd=str(ROOT))
             out = (r.stdout or "")[-500:] + (r.stderr or "")[-200:]

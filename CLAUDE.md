@@ -45,8 +45,10 @@
 
 - 常驻会话浏览器(必须先启动,所有 ehall 操作经它):
   "%USERPROFILE%\AppData\Local\ms-playwright\chromium-1243\chrome-win64\chrome.exe"
-  --user-data-dir="data\state\ehall\profile" --remote-debugging-port=9224
-  --disable-gpu --no-first-run --window-size=1440,900 --window-position=-32000,-32000 about:blank
+  --user-data-dir="%USERPROFILE%\myassistant-lnk\data\state\ehall\profile"
+  --remote-debugging-port=9224 --disable-gpu --no-first-run
+  --window-size=1440,900 --window-position=-32000,-32000 about:blank
+  (profile 一律用 myassistant-lnk 联接路径,与启动项 bat 保持一致,避免双重启动)
 - py scripts/ehall.py app-status — 查"节假日离返校"有无可登记的假期(closed/open)
 - py scripts/ehall.py search <关键词> — 大厅搜服务
 - 会话过期(CASTGC 失效,页面回登录页)时:py scripts/ehall.py login-assist,
@@ -67,6 +69,10 @@
 - 登录自启(启动文件夹 .bat,免管理员):
   - `myassistant-server.bat`:FastAPI 确认页服务(uvicorn,0.0.0.0:SERVER_PORT)
   - `myassistant-ehall-browser.bat`:ehall 常驻浏览器(profile+CDP 9224,离屏窗口)
+- **.bat 一律纯 ASCII**(2026-09-22 踩坑:UTF-8 无 BOM 的 bat 在 GBK 解析下
+  cd 中文路径失败,计划任务与自启静默失败、日志写不出);中文内容放 Python 脚本,
+  项目经目录联接 `%USERPROFILE%\myassistant-lnk` 提供 ASCII 路径
+  (重建:`cmd /c mklink /J C:\Users\<你>\myassistant-lnk D:\生成式软件工程\myassistant`)
 - 电源:AC 睡眠/休眠已禁用(standby-timeout-ac 0 / hibernate-timeout-ac 0),电池模式未动
 - 推送幂等:`data/state/push-notified.json` 记录已推送 UID;检查脚本只通知
   48 小时内未处理邮件,跳过自己发出的邮件,陈年旧信不打扰
