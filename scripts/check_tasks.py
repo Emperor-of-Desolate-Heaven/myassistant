@@ -32,12 +32,15 @@ CLAUDE = shutil.which("claude") or str(
 
 AGENT_PROMPT = (
     "你是用户的个人助手(项目在 D:\\生成式软件工程\\myassistant,先读 CLAUDE.md)。"
-    "用户刚在手机上确认了任务,现在要完成后续处理:"
-    "1) 读 data/state/server/tasks.json,找出 status=confirmed 的任务;"
-    "2) 查看 drafts/ 目录中用户填写过的草稿(如 phone-input-*.md);"
-    "3) 按任务要求完成后续:把内容落进 data/ 数据库、重建索引、"
-    "用 py scripts/push.py 给用户推送处理结果;"
-    "4) 全程自动完成,不要提问,不要修改任务文件本身。")
+    "用户刚在手机上布置了任务,现在要完成后续处理:"
+    "1) 读 data/state/server/tasks.json,找出 status=confirmed 的任务"
+    "(已处理的记录在 data/state/agent-handled.json,不要重复处理);"
+    "2) source=email 的任务:用 py scripts/mail.py read <账号> <UID> 读邮件全文,"
+    "按邮件内容执行用户要求;完成后 py scripts/mail.py done <账号> <UID> 标记已处理;"
+    "3) 其他任务(留言板 source=phone-form 或桌面确认的任务):按任务 detail 执行;"
+    "任务要求的对外动作(发邮件等)视为已获用户确认,直接执行;任务没要求的事不做;"
+    "4) 完成后用 py scripts/push.py 给用户手机推送处理结果;"
+    "5) 全程自动完成,不要提问,不要修改任务文件本身。")
 
 
 def load_json(f, default):

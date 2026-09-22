@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""定时邮件检查:发现新邮件 → Bark 推送到 iPhone。
+"""定时邮件检查:发现新邮件 → Bark 推送到 iPhone;自己发来的邮件 → 转成任务。
 
 设计(与 Task Scheduler 配合,每 30 分钟跑一次):
   - 只通知"最近 48 小时内的未处理邮件",陈年旧信不打扰;
-  - 跳过自己发出的邮件(发件人=自己任一账号);
-  - 已推送过的 UID 记在 data/state/push-notified.json,绝不重复推送;
+  - 发件人=自己任一账号的收件箱邮件,是用户从手机邮箱发来的指令:
+    自动转成 tasks.json 里 status=confirmed 的任务(交给 task-watcher 唤醒
+    headless Agent 执行),并 Bark 通知用户已收到;
+  - 已推送过的 UID 记在 data/state/push-notified.json,绝不重复推送/转任务;
   - 幂等:未处理 UID 仍以 data/state/email/ 为准(与 mail.py 共享)。
 """
 import json
@@ -21,6 +23,7 @@ from push import bark_push
 
 ROOT = Path(__file__).resolve().parent.parent
 NOTIFIED_FILE = ROOT / "data" / "state" / "push-notified.json"
+TASKS_FILE = ROOT / "data" / "state" / "server" / "tasks.json"
 WINDOW_H = 48
 FETCH_BATCH = 30
 
@@ -39,6 +42,30 @@ def save_notified(d):
     NOTIFIED_FILE.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def load_tasks():
+    if TASKS_FILE.is_file():
+        try:
+            return json.loads(TASKS_FILE.read_text(encoding="utf-8")).get("tasks", [])
+        except json.JSONDecodeError:
+            pass
+    return []
+
+
+def save_tasks(tasks):
+    TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TASKS_FILE.write_text(json.dumps(
+        {"tasks": tasks}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def new_tid(tasks):
+    base = "t" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    tid, n = base, 1
+    while any(t["id"] == tid for t in tasks):
+        n += 1
+        tid = f"{base}-{n}"
+    return tid
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):
         if stream and hasattr(stream, "reconfigure"):
@@ -50,7 +77,7 @@ def main():
     accs = get_accounts()
     self_addrs = {a["user"].lower() for a in accs.values() if a.get("user")}
     notified = load_notified()
-    fresh, errors = [], []
+    fresh, instructions, errors = [], [], []
     cutoff = datetime.now(timezone.utc) - timedelta(hours=WINDOW_H)
 
     for name, acc in accs.items():
@@ -72,23 +99,47 @@ def main():
                     continue
                 msg = BytesParser(policy=policy.default).parsebytes(d2[0][1])
                 frm = parseaddr(dec(msg.get("From")))[1].lower()
-                if frm in self_addrs:
-                    continue  # 自己发出的,不通知
                 dt = None
                 try:
                     dt = parsedate_to_datetime(msg.get("Date"))
                 except Exception:
                     pass
                 if dt and dt < cutoff:
-                    continue  # 超过 48 小时
-                fresh.append((name, uid, dec(msg.get("From")), dec(msg.get("Subject")), dt))
+                    continue  # 超过 48 小时,陈年旧信不打扰
                 notified.setdefault(name, []).append(str(uid))
+                if frm in self_addrs:
+                    # 自己发来的 = 用户从手机邮箱布置的指令
+                    instructions.append((name, uid, dec(msg.get("Subject")), dt))
+                    continue
+                fresh.append((name, uid, dec(msg.get("From")), dec(msg.get("Subject")), dt))
             M.logout()
         except Exception as e:
             errors.append(f"{name}: {e}")
             continue
 
     save_notified(notified)
+    if instructions:
+        tasks = load_tasks()
+        for name, uid, subj, dt in instructions:
+            tid = new_tid(tasks)
+            when = dt.strftime("%m-%d %H:%M") if dt else "?"
+            tasks.append({
+                "id": tid,
+                "title": f"邮件指令:{subj[:30]}",
+                "detail": ("来源:邮件指令(用户从手机邮箱发给自己账号的邮件)\n"
+                           f"账号:{name}\nUID:{uid}\n主题:{subj}\n时间:{when}\n"
+                           f"请用 py scripts/mail.py read {name} {uid} 读邮件全文,"
+                           "按邮件内容完成用户要求;处理完后用 "
+                           f"py scripts/mail.py done {name} {uid} 标记已处理。"),
+                "status": "confirmed",
+                "source": "email",
+                "result": "已收到,处理中",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        save_tasks(tasks)
+        lines = [f"· {subj[:40]}" for _, _, subj, _ in instructions[:5]]
+        bark_push(key, f"收到你的邮件指令 {len(instructions)} 条", "\n".join(lines))
+        print(f"已转成任务 {len(instructions)} 条邮件指令")
     if fresh:
         lines = [f"· {acc} | {subj[:40]}" for acc, _, _, subj, _ in fresh[:5]]
         more = f" 等 {len(fresh)} 封" if len(fresh) > 5 else ""

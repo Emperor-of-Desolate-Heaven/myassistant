@@ -5,6 +5,7 @@
   - 查看任务进度:GET  /           (任务列表,手机友好页面)
   - 创建任务:      POST /tasks     (Agent 用;创建后配合 scripts/push.py 推送确认链接)
   - 确认/拒绝:     POST /tasks/<id>/confirm|reject  (手机浏览器点按钮即触发)
+  - 手机留言板:    GET/POST /new   (用户从手机直接布置任务,无需桌面窗口)
   - 查看/编辑草稿: GET/POST /drafts/<name>  (Agent 生成的待确认邮件草稿)
 
 状态存 data/state/server/tasks.json(不入 git)。监听 0.0.0.0,
@@ -51,6 +52,16 @@ def save_tasks(tasks):
         {"tasks": tasks}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _new_tid(tasks):
+    """生成任务 ID(时间戳格式),避免与旧 ID 或并发创建冲突。"""
+    base = "t" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    tid, n = base, 1
+    while any(t["id"] == tid for t in tasks):
+        n += 1
+        tid = f"{base}-{n}"
+    return tid
+
+
 STATUS_CN = {"pending": "待确认", "confirmed": "已确认", "rejected": "已拒绝", "done": "已完成"}
 
 
@@ -80,6 +91,8 @@ h1 {{ font-size: 22px; }}
 a {{ color: #007aff; }}
 textarea {{ width: 100%; min-height: 40vh; font-size: 15px; padding: 10px;
   border: 1px solid #d2d2d7; border-radius: 10px; box-sizing: border-box; }}
+input[type=text] {{ width: 100%; font-size: 16px; padding: 10px;
+  border: 1px solid #d2d2d7; border-radius: 10px; box-sizing: border-box; }}
 </style></head><body>
 {body}
 </body></html>"""
@@ -96,7 +109,9 @@ def task_card(t):
 @app.get("/", response_class=HTMLResponse)
 def index():
     tasks = sorted(load_tasks(), key=lambda t: t.get("created_at", ""), reverse=True)
-    body = "<h1>我的助手 · 任务</h1>"
+    body = ("<h1>我的助手 · 任务</h1>"
+            "<div class='card'><a class='btn ok' href='/new'>＋ 布置新任务</a>"
+            "<span class='meta'>提交后约 5 分钟内处理,Bark 通知结果</span></div>")
     body += "".join(task_card(t) for t in tasks) or "<div class='card'>暂无任务</div>"
     return PAGE.format(title="我的助手 · 任务", body=body)
 
@@ -124,7 +139,11 @@ def task_page(tid: str):
                  f"<form method='post' action='/tasks/{tid}/reject'>"
                  f"<button class='btn no' type='submit'>拒绝</button></form>")
     else:
-        body += f"<div class='card meta'>处理结果:{t.get('result', '') or '已处理'}</div>"
+        if t["status"] == "confirmed" and not t.get("result"):
+            r = "已收到,处理中(最长约 5 分钟,结果经 Bark 通知)"
+        else:
+            r = t.get("result") or "已处理"
+        body += f"<div class='card meta'>处理结果:{r}</div>"
     body += "<br><a href='/'>← 返回任务列表</a>"
     return PAGE.format(title=t["title"], body=body)
 
@@ -156,9 +175,38 @@ def reject(tid: str):
 @app.post("/tasks")
 def create_task(title: str = Form(...), detail: str = Form("")):
     tasks = load_tasks()
-    tid = f"t{len(tasks) + 1:03d}"
+    tid = _new_tid(tasks)
     tasks.append({
         "id": tid, "title": title, "detail": detail, "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    save_tasks(tasks)
+    return RedirectResponse(f"/tasks/{tid}", 303)
+
+
+# ---------- 手机留言板(用户直接布置任务) ----------
+
+@app.get("/new", response_class=HTMLResponse)
+def new_task_page():
+    body = ("<h1>给助手布置任务</h1>"
+            "<div class='card'><form method='post' action='/new'>"
+            "<input type='text' name='title' placeholder='一句话标题(必填)' required>"
+            "<br><br>"
+            "<textarea name='content' placeholder='具体要求……(选填)' "
+            "style='min-height:30vh'></textarea><br><br>"
+            "<button class='btn ok' type='submit'>发送给助手</button></form></div>"
+            "<div class='card meta'>提交后约 5 分钟内处理,结果经 Bark 通知手机。</div>"
+            "<a href='/'>← 返回任务列表</a>")
+    return PAGE.format(title="布置任务", body=body)
+
+
+@app.post("/new")
+def new_task(title: str = Form(...), content: str = Form("")):
+    tasks = load_tasks()
+    tid = _new_tid(tasks)
+    tasks.append({
+        "id": tid, "title": title, "detail": content, "status": "confirmed",
+        "source": "phone-form", "result": "已收到,处理中",
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     save_tasks(tasks)
