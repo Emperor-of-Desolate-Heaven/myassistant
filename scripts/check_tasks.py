@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +24,8 @@ ROOT = Path(__file__).resolve().parent.parent
 TASKS_FILE = ROOT / "data" / "state" / "server" / "tasks.json"
 HANDLED_FILE = ROOT / "data" / "state" / "agent-handled.json"
 MAX_ATTEMPTS = 3
+LOCK_FILE = ROOT / "data" / "state" / "task-watcher.lock"
+LOCK_STALE_S = 1200  # 锁超过 20 分钟视为上次运行崩溃遗留,允许接管
 
 # claude CLI:优先 PATH,否则用 WinGet 默认安装位置(基于 USERPROFILE,不写死用户名)
 CLAUDE = shutil.which("claude") or str(
@@ -55,51 +58,88 @@ def save_json(f, data):
     f.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def acquire_lock():
+    """防止两班 watcher 重叠:处理时长(每条任务几分钟)可能超过调度间隔(5 分钟)。
+
+    2026-09-22 踩坑:11:35 与 11:40 两班同时跑,同一批任务被重复派发,
+    同一封邮件指令被多个 agent 重复执行。锁文件让后一班直接跳过。
+    """
+    try:
+        with open(LOCK_FILE, "x", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+        return True
+    except FileExistsError:
+        try:
+            stale = time.time() - LOCK_FILE.stat().st_mtime
+        except OSError:
+            stale = 0
+        if stale > LOCK_STALE_S:
+            try:
+                LOCK_FILE.unlink()
+                with open(LOCK_FILE, "x", encoding="utf-8") as f:
+                    f.write(str(os.getpid()))
+                return True
+            except (OSError, FileExistsError):
+                pass
+        return False
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):
         if stream and hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
-    tasks = [t for t in load_json(TASKS_FILE, {}).get("tasks", [])
-             if t.get("status") == "confirmed"]
-    handled = load_json(HANDLED_FILE, {})
-    todo = [t for t in tasks if t["id"] not in handled
-            or handled[t["id"]].get("status") == "failed" and handled[t["id"]].get("attempts", 0) < MAX_ATTEMPTS]
-    if not todo:
-        print("无新确认任务")
+    if not acquire_lock():
+        print("上一次 watcher 尚未结束(锁存在),跳过本次,防止重复派发")
         return
-    for t in todo:
-        tid = t["id"]
-        rec = handled.get(tid, {"attempts": 0})
-        print(f"处理任务 {tid}: {t.get('title', '')[:40]}")
-        prompt = AGENT_PROMPT.format(
-            tid=tid, title=t.get("title", ""), detail=t.get("detail", "") or "(无)")
+    try:
+        tasks = [t for t in load_json(TASKS_FILE, {}).get("tasks", [])
+                 if t.get("status") == "confirmed"]
+        handled = load_json(HANDLED_FILE, {})
+        todo = [t for t in tasks if t["id"] not in handled
+                or handled[t["id"]].get("status") == "failed" and handled[t["id"]].get("attempts", 0) < MAX_ATTEMPTS]
+        if not todo:
+            print("无新确认任务")
+            return
+        for t in todo:
+            tid = t["id"]
+            rec = handled.get(tid, {"attempts": 0})
+            print(f"处理任务 {tid}: {t.get('title', '')[:40]}")
+            prompt = AGENT_PROMPT.format(
+                tid=tid, title=t.get("title", ""), detail=t.get("detail", "") or "(无)")
+            try:
+                r = subprocess.run(
+                    [CLAUDE, "-p", prompt, "--permission-mode", "bypassPermissions"],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=900, cwd=str(ROOT))
+                out = (r.stdout or "")[-500:] + (r.stderr or "")[-200:]
+                if r.returncode == 0:
+                    handled[tid] = {"status": "done", "attempts": rec.get("attempts", 0) + 1,
+                                    "at": datetime.now(timezone.utc).isoformat(), "log": out}
+                    print(f"  {tid} 完成")
+                else:
+                    raise RuntimeError(f"claude 退出码 {r.returncode}")
+            except Exception as e:
+                rec["attempts"] = rec.get("attempts", 0) + 1
+                rec["status"] = "failed"
+                rec["last_error"] = str(e)[:200]
+                rec["at"] = datetime.now(timezone.utc).isoformat()
+                handled[tid] = rec
+                print(f"  {tid} 失败(第 {rec['attempts']} 次): {e}", file=sys.stderr)
+                if rec["attempts"] >= MAX_ATTEMPTS:
+                    key = load_env().get("BARK_KEY", "").strip()
+                    if key:
+                        try:
+                            bark_push(key, "助手处理任务失败",
+                                      f"任务 {tid} 尝试 {MAX_ATTEMPTS} 次未完成,需要人工介入。")
+                        except Exception:
+                            pass
+            # 逐条落盘:进程中途被杀(如 2026-09-22 11:40 那次)也不会整批重派
+            save_json(HANDLED_FILE, handled)
+    finally:
         try:
-            r = subprocess.run(
-                [CLAUDE, "-p", prompt, "--permission-mode", "bypassPermissions"],
-                capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=900, cwd=str(ROOT))
-            out = (r.stdout or "")[-500:] + (r.stderr or "")[-200:]
-            if r.returncode == 0:
-                handled[tid] = {"status": "done", "attempts": rec.get("attempts", 0) + 1,
-                                "at": datetime.now(timezone.utc).isoformat(), "log": out}
-                print(f"  {tid} 完成")
-            else:
-                raise RuntimeError(f"claude 退出码 {r.returncode}")
-        except Exception as e:
-            rec["attempts"] = rec.get("attempts", 0) + 1
-            rec["status"] = "failed"
-            rec["last_error"] = str(e)[:200]
-            rec["at"] = datetime.now(timezone.utc).isoformat()
-            handled[tid] = rec
-            print(f"  {tid} 失败(第 {rec['attempts']} 次): {e}", file=sys.stderr)
-            if rec["attempts"] >= MAX_ATTEMPTS:
-                key = load_env().get("BARK_KEY", "").strip()
-                if key:
-                    try:
-                        bark_push(key, "助手处理任务失败", f"任务 {tid} 尝试 {MAX_ATTEMPTS} 次未完成,需要人工介入。")
-                    except Exception:
-                        pass
-    save_json(HANDLED_FILE, handled)
+            LOCK_FILE.unlink()
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

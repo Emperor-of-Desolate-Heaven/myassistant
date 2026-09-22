@@ -281,12 +281,16 @@ def cmd_send(args):
         sys.exit(1)
     acc = accs[acc_name]
     lines = f.read_text(encoding="utf-8").splitlines()
-    header = {}
+    header, attaches = {}, []
     i = 1
     while i < len(lines) and lines[i] != "---":
         if ":" in lines[i]:
             k, v = lines[i].split(":", 1)
-            header[k.strip().lower()] = v.strip()
+            k, v = k.strip().lower(), v.strip()
+            if k == "attach":
+                attaches.append(v)
+            else:
+                header[k] = v
         i += 1
     body = "\n".join(lines[i + 1:]).strip()
     to, subject = header.get("to", ""), header.get("subject", "")
@@ -303,6 +307,23 @@ def cmd_send(args):
     if header.get("cc"):
         msg["Cc"] = header["cc"]
     msg.set_content(body)
+    for path in attaches:  # attach: 可多行;相对路径以项目根为基准
+        p = Path(path)
+        if not p.is_absolute():
+            p = ROOT / p
+        if not p.is_file():
+            print(f"[错误] 附件不存在:{p}", file=sys.stderr)
+            sys.exit(1)
+        data = p.read_bytes()
+        main, sub = ("application", "pdf") if p.suffix.lower() == ".pdf" else \
+                    ("application", "octet-stream")
+        msg.add_attachment(data, maintype=main, subtype=sub, filename=p.name)
+    sent_dir = DRAFTS_DIR / "sent"
+    dest = sent_dir / f.name
+    if dest.is_file():
+        print(f"[跳过] drafts/sent/{f.name} 已存在,该草稿发送过,不重复发送(幂等保护)",
+              file=sys.stderr)
+        sys.exit(1)
     with smtplib.SMTP_SSL(acc["smtp"], 465, context=ssl.create_default_context(), timeout=30) as S:
         S.login(acc["user"], acc["pass"])
         S.send_message(msg)
@@ -311,9 +332,8 @@ def cmd_send(args):
         processed[uid] = {"status": "replied", "at": datetime.now(timezone.utc).isoformat(),
                           "subject": subject, "to": to}
         save_state(acc, processed)
-    sent_dir = DRAFTS_DIR / "sent"
     sent_dir.mkdir(parents=True, exist_ok=True)
-    f.rename(sent_dir / f.name)
+    f.rename(dest)
     print(f"已发送并归档:drafts/sent/{f.name} (账号 {acc_name})")
 
 

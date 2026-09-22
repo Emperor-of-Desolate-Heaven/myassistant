@@ -18,12 +18,13 @@ from email.utils import parsedate_to_datetime, parseaddr
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from mail import load_env, get_accounts, load_state, imap_conn, dec
+from mail import load_env, get_accounts, load_state, imap_conn, dec, DRAFTS_DIR
 from push import bark_push
 
 ROOT = Path(__file__).resolve().parent.parent
 NOTIFIED_FILE = ROOT / "data" / "state" / "push-notified.json"
 TASKS_FILE = ROOT / "data" / "state" / "server" / "tasks.json"
+SENT_DIR = DRAFTS_DIR / "sent"
 WINDOW_H = 48
 FETCH_BATCH = 30
 
@@ -55,6 +56,39 @@ def save_tasks(tasks):
     TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
     TASKS_FILE.write_text(json.dumps(
         {"tasks": tasks}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def is_own_reply_echo(M, uid, acc_name):
+    """自收自发邮件中,助手自己发出回复的副本(收件人=自己,回到收件箱)。
+
+    判别依据:助手发出的每封邮件都归档在 drafts/sent/,正文与归档草稿一致;
+    用户从手机回复时新指令在正文开头、引用的旧文在后,与归档草稿不相等。
+    只有能证明是助手发出副本时才返回 True,拿不准一律按用户指令处理。
+    """
+    try:
+        typ, d = M.uid("fetch", str(uid).encode(), "(BODY.PEEK[])")
+        if typ != "OK" or not d or not isinstance(d[0], tuple):
+            return False
+        msg = BytesParser(policy=policy.default).parsebytes(d[0][1])
+        texts = [p.get_content() for p in msg.walk()
+                 if p.get_content_type() == "text/plain" and not p.is_multipart()]
+        body = "\n".join(str(t) for t in texts if t).replace("\r\n", "\n").strip()
+        if not body:
+            return False
+        for f in SENT_DIR.glob(f"{acc_name}-*.md"):
+            try:
+                lines = f.read_text(encoding="utf-8").splitlines()
+                i = 1
+                while i < len(lines) and lines[i] != "---":
+                    i += 1
+                sent = "\n".join(lines[i + 1:]).strip()
+            except OSError:
+                continue
+            if sent == body:
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def new_tid(tasks):
@@ -108,6 +142,10 @@ def main():
                     continue  # 超过 48 小时,陈年旧信不打扰
                 notified.setdefault(name, []).append(str(uid))
                 if frm in self_addrs:
+                    if is_own_reply_echo(M, uid, name):
+                        # 助手自己发出回复的副本回到收件箱,不是用户指令
+                        # (2026-09-22 幽灵任务 t20260922033210-2 踩坑)
+                        continue
                     # 自己发来的 = 用户从手机邮箱布置的指令
                     instructions.append((name, uid, dec(msg.get("Subject")), dt))
                     continue
@@ -117,10 +155,13 @@ def main():
             errors.append(f"{name}: {e}")
             continue
 
-    save_notified(notified)
     if instructions:
         tasks = load_tasks()
         for name, uid, subj, dt in instructions:
+            if any(t.get("source") == "email"
+                   and f"账号:{name}\nUID:{uid}" in t.get("detail", "")
+                   for t in tasks):
+                continue  # 同一封指令邮件已建过任务(上次崩溃等),不重复建
             tid = new_tid(tasks)
             when = dt.strftime("%m-%d %H:%M") if dt else "?"
             tasks.append({
@@ -137,6 +178,9 @@ def main():
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
         save_tasks(tasks)
+    # 任务先落盘、再标记已通知:中途崩溃宁可重建任务(上方已查重),不可丢指令
+    save_notified(notified)
+    if instructions:
         lines = [f"· {subj[:40]}" for _, _, subj, _ in instructions[:5]]
         bark_push(key, f"收到你的邮件指令 {len(instructions)} 条", "\n".join(lines))
         print(f"已转成任务 {len(instructions)} 条邮件指令")
