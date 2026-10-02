@@ -10,6 +10,9 @@ data/events/
 data/archive/
 steps.txt
 
+# 本机 Claude Code 个人配置(含权限白名单,不进仓库)
+.claude/settings.local.json
+
 # Python
 __pycache__/
 *.pyc
