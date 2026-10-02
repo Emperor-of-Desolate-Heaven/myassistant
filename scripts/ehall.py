@@ -45,11 +45,14 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
 
 
-def launch_ctx(pw, headless=False, offscreen=True):
+def launch_ctx(pw, headless=False, offscreen=False):
     """持久化上下文:所有登录态落在 profile 目录,跨进程复用。
 
-    默认有头+屏幕外窗口:CAS 的 TGC 与浏览器指纹绑定,无头与有头指纹不同,
-    一旦对同一 profile 混用无头,会触发 TGC 吊销。屏幕外窗口不打扰用户。
+    默认有头+可见窗口:CAS 的 TGC 与浏览器指纹绑定,无头与有头指纹不同,
+    一旦对同一 profile 混用无头,会触发 TGC 吊销。
+    需要离屏(如全自动 login)时显式传 offscreen=True。
+    (2026-10-02 踩坑:默认 offscreen 把 login-assist 的窗口也丢到屏幕外,
+    用户看不见滑块,协作登录无法进行。)
     """
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     # --disable-gpu:Windows 上后台进程启动的 Chromium 若不关 GPU 合成,
@@ -57,6 +60,10 @@ def launch_ctx(pw, headless=False, offscreen=True):
     args = ["--disable-gpu"]
     if offscreen:
         args.append("--window-position=-32000,-32000")
+    else:
+        # 显式压到屏幕内:profile 记住了上次的离屏位置,Chrome 会自动还原,
+        # 不传这个参数窗口会"消失"在屏幕外(2026-10-02 实测)
+        args.append("--window-position=60,60")
     ctx = pw.chromium.launch_persistent_context(
         user_data_dir=str(PROFILE_DIR),
         viewport={"width": 1440, "height": 900},
