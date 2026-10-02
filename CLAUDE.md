@@ -53,6 +53,9 @@
 - py scripts/ehall.py search <关键词> — 大厅搜服务
 - 会话过期(CASTGC 失效,页面回登录页)时:py scripts/ehall.py login-assist,
   让用户亲手拖滑块;登录后 CASTGC 落盘,重启常驻浏览器即可复用
+- 代办「节假日离返校」登记按技能 `.claude/skills/ehall-holiday-register` 执行
+  (2026-10-02 国庆登记实测沉淀:日期框必须日历点选、去向类型必须 jqx API 选、
+  必须先保存去向明细再提交)
 - 铁律:CAS 风控无头必拦、混用无头会吊销 CASTGC;常驻浏览器永远有头
 - 提交类操作:填表后先展示关键字段+后果,等用户确认才提交;退课/撤销申请
   类危险操作一律不做自动提交(双重确认)
